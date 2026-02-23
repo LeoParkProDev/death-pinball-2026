@@ -4,8 +4,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import Matter from 'matter-js';
 import { supabase } from '@/lib/supabaseClient';
 import { RealtimeChannel } from '@supabase/supabase-js';
+import seedrandom from 'seedrandom';
 
-// Import Player type from Lobby (or define compatible one)
 export type Player = {
   id: string;
   name: string;
@@ -18,10 +18,12 @@ export type Player = {
 interface PinballBoardProps {
   players: Player[];
   roomId: string;
+  randomSeed: string;
+  isHost: boolean;
   onRestart: () => void;
 }
 
-const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart }) => {
+const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed, isHost, onRestart }) => {
   const sceneRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Matter.Engine | null>(null);
   const renderRef = useRef<Matter.Render | null>(null);
@@ -40,15 +42,17 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
 
       channel
         .on('broadcast', { event: 'game_winner' }, ({ payload }) => {
-            // Received winner from someone else (likely Host)
+            // Received winner from Host
             if (payload.winnerId) {
                 const winnerPlayer = players.find(p => p.id === payload.winnerId);
                 if (winnerPlayer) {
                     setWinner(winnerPlayer);
-                    // Stop engine if running
                     if (runnerRef.current) Matter.Runner.stop(runnerRef.current);
                 }
             }
+        })
+        .on('broadcast', { event: 'restart_game' }, () => {
+            onRestart();
         })
         .subscribe();
 
@@ -63,7 +67,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
   // --- Physics Engine ---
   useEffect(() => {
     if (!sceneRef.current || players.length === 0) return;
-    if (winner) return; // Don't restart physics if winner decided
+    if (winner) return; 
+
+    // Initialize RNG with seed
+    const rng = seedrandom(randomSeed);
 
     // 1. Setup Matter.js
     const Engine = Matter.Engine;
@@ -72,14 +79,12 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
     const World = Matter.World;
     const Bodies = Matter.Bodies;
     const Events = Matter.Events;
-    const Constraint = Matter.Constraint;
 
+    // Deterministic simulation is hard in JS, but seed helps initial state
     const engine = Engine.create();
     const world = engine.world;
     
-    // Slow down gravity to 1/3 of previous (0.5 -> 0.17)
     engine.gravity.y = 0.17;
-    
     engineRef.current = engine;
 
     const width = 600;
@@ -111,7 +116,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
 
     World.add(world, [leftWall, rightWall, divider1, divider2, divider3]);
 
-    // 3. Floor Sensor (Invisible line to detect finish)
+    // 3. Floor Sensor
     const floorSensor = Bodies.rectangle(width / 2, height - 10, width, 20, {
       isStatic: true,
       isSensor: true, 
@@ -133,7 +138,6 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
     const startY = 150;
     const spacingY = 50;
     
-    // Propeller Centers
     const centers = [
         {x:300, y:400}, 
         {x:150, y:600}, {x:450, y:600},
@@ -179,15 +183,15 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
         propellerTopLeft, propellerTopRight
     ]);
 
-    // Randomize rotation directions
+    // Randomize rotation directions using Seeded RNG
     const rotationSpeed = 0.015;
-    const dirCenter = Math.random() < 0.5 ? 1 : -1;
-    const dirLeft = Math.random() < 0.5 ? 1 : -1;
-    const dirRight = Math.random() < 0.5 ? 1 : -1;
-    const dirTopLeft = Math.random() < 0.5 ? 1 : -1;
-    const dirTopRight = Math.random() < 0.5 ? 1 : -1;
+    const dirCenter = rng() < 0.5 ? 1 : -1;
+    const dirLeft = rng() < 0.5 ? 1 : -1;
+    const dirRight = rng() < 0.5 ? 1 : -1;
+    const dirTopLeft = rng() < 0.5 ? 1 : -1;
+    const dirTopRight = rng() < 0.5 ? 1 : -1;
 
-    // Rotate propellers on every update
+    // Rotate propellers
     Events.on(engine, 'beforeUpdate', () => {
         Matter.Body.rotate(propellerCenter, rotationSpeed * dirCenter);
         Matter.Body.rotate(propellerLeft, rotationSpeed * dirLeft); 
@@ -198,28 +202,28 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
 
     // 5. Balls (From Players)
     const ballOptions = (color: string, label: string) => ({
-      restitution: 0.95, // High bounciness for interaction
+      restitution: 0.95, 
       friction: 0.001,
       frictionAir: 0.01,
-      density: 0.05, // Heavy balls
+      density: 0.05, 
       render: { fillStyle: color },
       label: label
     });
 
     const ballRadius = 16; 
     const dropY = -50; 
-
-    // Cluster balls near center
     const centerX = width / 2;
     
     const balls = players.map((player, index) => {
         const offset = (index - 1.5) * 20; 
         const startX = centerX + offset;
-        const jitter = (Math.random() - 0.5) * 10; 
+        // Use RNG for jitter
+        const jitter = (rng() - 0.5) * 10; 
+        const randomHeight = rng() * 20;
         
         return Bodies.circle(
             startX + jitter, 
-            dropY + (Math.random() * 20), 
+            dropY + randomHeight, 
             ballRadius, 
             ballOptions(player.color, player.id)
         );
@@ -229,6 +233,9 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
 
     // 6. Collision Event
     Events.on(engine, 'collisionStart', (event) => {
+      // ONLY HOST determines winner to prevent sync issues
+      if (!isHost) return;
+
       const pairs = event.pairs;
       
       for (let i = 0; i < pairs.length; i++) {
@@ -271,7 +278,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
       World.clear(world, false);
       Engine.clear(engine);
     };
-  }, [players]); 
+  }, [players, randomSeed, isHost]); 
 
   // --- UI ---
   return (
@@ -298,12 +305,25 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart 
                Color: {winner.colorName}
              </p>
              
-             <button 
-               onClick={onRestart}
-               className="px-8 py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg"
-             >
-               Play Again
-             </button>
+             {isHost ? (
+                <button 
+                onClick={() => {
+                    if (channelRef.current) {
+                        channelRef.current.send({
+                            type: 'broadcast',
+                            event: 'restart_game',
+                            payload: {}
+                        });
+                    }
+                    onRestart();
+                }}
+                className="px-8 py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg"
+                >
+                Play Again
+                </button>
+             ) : (
+                 <p className="text-yellow-400 animate-pulse font-bold text-xl">Waiting for Host to restart...</p>
+             )}
            </div>
         )}
       </div>

@@ -11,10 +11,14 @@ export default function Home() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [gameKey, setGameKey] = useState(0); 
   const [currentRoomId, setCurrentRoomId] = useState<string>('');
+  const [currentSeed, setCurrentSeed] = useState<string>('');
+  const [currentIsHost, setCurrentIsHost] = useState<boolean>(false);
 
-  const handleGameStart = (joinedPlayers: Player[], roomId: string) => {
+  const handleGameStart = (joinedPlayers: Player[], roomId: string, randomSeed: string, isHost: boolean) => {
     setPlayers(joinedPlayers);
     setCurrentRoomId(roomId);
+    setCurrentSeed(randomSeed);
+    setCurrentIsHost(isHost);
     setGameState('playing');
   };
 
@@ -32,6 +36,8 @@ export default function Home() {
             players={players} 
             onRestart={handleRestart}
             roomId={currentRoomId}
+            randomSeed={currentSeed}
+            isHost={currentIsHost}
         />
       )}
     </main>
