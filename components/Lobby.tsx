@@ -1,7 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { supabase } from '@/lib/supabaseClient';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 export type Player = {
   id: string;
@@ -13,7 +15,7 @@ export type Player = {
 };
 
 interface LobbyProps {
-  onGameStart: (players: Player[]) => void;
+  onGameStart: (players: Player[], roomId: string) => void;
 }
 
 const COLORS = [
@@ -32,9 +34,9 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [isHost, setIsHost] = useState(false);
   const [url, setUrl] = useState('');
-  
-  // Track my own player ID to update ready state
   const [myPlayerId, setMyPlayerId] = useState<string>('');
+  
+  const channelRef = useRef<RealtimeChannel | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -49,6 +51,81 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     }
   }, []);
 
+  // --- Realtime Logic ---
+
+  useEffect(() => {
+    if (!isHost || !channelRef.current || players.length === 0) return;
+
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'update_players',
+      payload: { players }
+    });
+  }, [players, isHost]);
+
+  const setupChannel = (id: string, isHostUser: boolean, initialPlayers: Player[]) => {
+    if (channelRef.current) supabase.removeChannel(channelRef.current);
+
+    const channel = supabase.channel(`room:${id}`, {
+      config: {
+        broadcast: { self: true }, 
+      },
+    });
+
+    channel
+      .on('broadcast', { event: 'update_players' }, ({ payload }) => {
+        if (!isHostUser) {
+          setPlayers(payload.players);
+        }
+      })
+      .on('broadcast', { event: 'join_request' }, ({ payload }) => {
+        if (isHostUser) {
+          setPlayers((prev) => {
+            if (prev.length >= 4) return prev;
+            if (prev.some(p => p.id === payload.player.id)) return prev;
+
+            const newPlayer = {
+              ...payload.player,
+              color: COLORS[prev.length].code,
+              colorName: COLORS[prev.length].name,
+            };
+            return [...prev, newPlayer];
+          });
+        }
+      })
+      .on('broadcast', { event: 'ready_change' }, ({ payload }) => {
+        if (isHostUser) {
+           setPlayers(prev => prev.map(p => 
+               p.id === payload.id ? { ...p, isReady: payload.isReady } : p
+           ));
+        }
+      })
+      .on('broadcast', { event: 'start_game' }, ({ payload }) => {
+          // Pass roomId explicitly
+          onGameStart(payload.players, id); 
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            if (!isHostUser && initialPlayers.length > 0) {
+                 channel.send({
+                    type: 'broadcast',
+                    event: 'join_request',
+                    payload: { player: initialPlayers[0] }
+                 });
+            }
+        }
+      });
+
+    channelRef.current = channel;
+  };
+
+  useEffect(() => {
+      return () => {
+          if (channelRef.current) supabase.removeChannel(channelRef.current);
+      };
+  }, []);
+
+
   const generateRoomId = () => {
     const id = Math.floor(1000 + Math.random() * 9000).toString();
     setRoomId(id);
@@ -61,10 +138,12 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
         color: COLORS[0].code,
         colorName: COLORS[0].name,
         isHost: true,
-        isReady: true // Host is always ready
+        isReady: true
     };
     setPlayers([me]);
     setMyPlayerId(newId);
+    
+    setupChannel(id, true, [me]);
     setView('lobby');
   };
 
@@ -72,19 +151,18 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     if (roomId.length !== 4) return;
     setIsHost(false);
     
-    // In real app, we would fetch existing players
-    // Here we just simulate joining as 2nd player
     const newId = 'guest-' + Date.now();
     const me: Player = {
         id: newId,
         name: nickname || `Guest-${Math.floor(Math.random()*100)}`,
-        color: COLORS[1].code,
-        colorName: COLORS[1].name,
+        color: '', 
+        colorName: '',
         isHost: false,
-        isReady: false // Guest starts unready
+        isReady: false
     };
-    setPlayers([me]); 
     setMyPlayerId(newId);
+    
+    setupChannel(roomId, false, [me]);
     setView('lobby');
   };
 
@@ -98,18 +176,34 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
         color: COLORS[players.length].code,
         colorName: COLORS[players.length].name,
         isHost: false,
-        isReady: true // Bots are always ready
+        isReady: true
       };
       setPlayers(prev => [...prev, newPlayer]);
   };
 
   const toggleReady = () => {
-      setPlayers(prev => prev.map(p => 
-          p.id === myPlayerId ? { ...p, isReady: !p.isReady } : p
-      ));
+      const newReadyState = !players.find(p => p.id === myPlayerId)?.isReady;
+      
+      if (channelRef.current) {
+          channelRef.current.send({
+              type: 'broadcast',
+              event: 'ready_change',
+              payload: { id: myPlayerId, isReady: newReadyState }
+          });
+      }
   };
 
-  // Check if all players are ready
+  const startGame = () => {
+      if (channelRef.current) {
+          channelRef.current.send({
+              type: 'broadcast',
+              event: 'start_game',
+              payload: { players }
+          });
+      }
+      onGameStart(players, roomId);
+  };
+
   const allReady = players.length > 0 && players.every(p => p.isReady);
 
 
@@ -175,7 +269,6 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
             ))}
         </div>
 
-        {/* Numeric Keypad */}
         <div className="grid grid-cols-3 gap-4 mb-8">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
                 <button
@@ -225,7 +318,6 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     );
   }
 
-  // Lobby View
   const roomUrl = `${url}?room=${roomId}`;
   const myPlayer = players.find(p => p.id === myPlayerId);
 
@@ -233,7 +325,6 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white font-sans p-4">
       <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-8">
           
-          {/* Left: Room Info & QR */}
           <div className="bg-gray-800 p-8 rounded-2xl shadow-xl flex flex-col items-center text-center">
               <h2 className="text-gray-400 font-medium mb-2">ROOM ID</h2>
               <div className="text-6xl font-black tracking-widest text-white mb-8 font-mono">
@@ -268,6 +359,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
                       </p>
                       <button
                             onClick={toggleReady}
+                            disabled={!myPlayer}
                             className={`w-full py-3 font-bold rounded-lg transition ${
                                 myPlayer?.isReady 
                                 ? 'bg-green-600 hover:bg-green-500 text-white' 
@@ -280,7 +372,6 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
               )}
           </div>
 
-          {/* Right: Players List */}
           <div className="bg-gray-800 p-8 rounded-2xl shadow-xl w-full flex flex-col justify-between">
               <div>
                 <h3 className="text-2xl font-bold mb-6 flex justify-between items-center text-white">
@@ -343,7 +434,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
 
               {isHost && (
                   <button 
-                    onClick={() => onGameStart(players)}
+                    onClick={startGame}
                     disabled={players.length < 2 || !allReady}
                     className="mt-8 w-full py-4 bg-gradient-to-r from-pink-600 to-yellow-500 hover:from-pink-500 hover:to-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xl shadow-lg transition transform active:scale-95"
                   >

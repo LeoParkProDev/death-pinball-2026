@@ -2,30 +2,68 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Matter from 'matter-js';
+import { supabase } from '@/lib/supabaseClient';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
-// Define Player type here or import if shared
+// Import Player type from Lobby (or define compatible one)
 export type Player = {
   id: string;
   name: string;
   color: string;
   colorName: string;
+  isHost: boolean;
+  isReady: boolean;
 };
 
 interface PinballBoardProps {
   players: Player[];
+  roomId: string;
   onRestart: () => void;
 }
 
-const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
+const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, onRestart }) => {
   const sceneRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Matter.Engine | null>(null);
   const renderRef = useRef<Matter.Render | null>(null);
   const runnerRef = useRef<Matter.Runner | null>(null);
   
   const [winner, setWinner] = useState<Player | null>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
 
+  // --- Realtime Winner Sync ---
+  useEffect(() => {
+      if (!roomId) return;
+
+      const channel = supabase.channel(`room:${roomId}`, {
+        config: { broadcast: { self: true } }
+      });
+
+      channel
+        .on('broadcast', { event: 'game_winner' }, ({ payload }) => {
+            // Received winner from someone else (likely Host)
+            if (payload.winnerId) {
+                const winnerPlayer = players.find(p => p.id === payload.winnerId);
+                if (winnerPlayer) {
+                    setWinner(winnerPlayer);
+                    // Stop engine if running
+                    if (runnerRef.current) Matter.Runner.stop(runnerRef.current);
+                }
+            }
+        })
+        .subscribe();
+
+      channelRef.current = channel;
+
+      return () => {
+          supabase.removeChannel(channel);
+      };
+  }, [roomId, players]);
+
+
+  // --- Physics Engine ---
   useEffect(() => {
     if (!sceneRef.current || players.length === 0) return;
+    if (winner) return; // Don't restart physics if winner decided
 
     // 1. Setup Matter.js
     const Engine = Matter.Engine;
@@ -34,7 +72,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
     const World = Matter.World;
     const Bodies = Matter.Bodies;
     const Events = Matter.Events;
-    const Constraint = Matter.Constraint; // Add Constraint
+    const Constraint = Matter.Constraint;
 
     const engine = Engine.create();
     const world = engine.world;
@@ -76,7 +114,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
     // 3. Floor Sensor (Invisible line to detect finish)
     const floorSensor = Bodies.rectangle(width / 2, height - 10, width, 20, {
       isStatic: true,
-      isSensor: true, // Helper: Detects collision but doesn't react physically
+      isSensor: true, 
       render: { visible: false },
       label: 'FloorSensor'
     });
@@ -87,7 +125,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
     const pinOptions = { 
       isStatic: true, 
       render: { fillStyle: '#aaa' },
-      restitution: 1.0 // Slightly reduced bounciness for control
+      restitution: 1.0 
     };
     
     const rows = 12;
@@ -95,22 +133,21 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
     const startY = 150;
     const spacingY = 50;
     
+    // Propeller Centers
+    const centers = [
+        {x:300, y:400}, 
+        {x:150, y:600}, {x:450, y:600},
+        {x:150, y:250}, {x:450, y:250}
+    ];
+
+    const isNearPropeller = (px: number, py: number) => {
+        return centers.some(c => Math.hypot(px - c.x, py - c.y) < 80);
+    };
+    
     for (let row = 0; row < rows; row++) {
       const y = startY + row * spacingY;
       const xOffset = row % 2 === 0 ? 0 : 35;
       
-      // Avoid placing pins where propellers will be
-      // Propeller Centers: (300, 400), (150, 600), (450, 600), (150, 250), (450, 250)
-      // Radius ~80px clearance
-      const isNearPropeller = (px: number, py: number) => {
-          const centers = [
-              {x:300, y:400}, 
-              {x:150, y:600}, {x:450, y:600},
-              {x:150, y:250}, {x:450, y:250}
-          ];
-          return centers.some(c => Math.hypot(px - c.x, py - c.y) < 80);
-      };
-
       for (let col = 0; col < cols; col++) {
         const x = 60 + col * 70 + xOffset;
         if (x > width - 40) continue;
@@ -130,12 +167,9 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
         chamfer: { radius: 5 }
     };
     
-    // Original 3
     const propellerCenter = Bodies.rectangle(300, 400, 140, 15, propellerOptions);
     const propellerLeft = Bodies.rectangle(150, 600, 140, 15, propellerOptions);
     const propellerRight = Bodies.rectangle(450, 600, 140, 15, propellerOptions);
-
-    // New 2 (Top Left, Top Right)
     const propellerTopLeft = Bodies.rectangle(150, 250, 140, 15, propellerOptions);
     const propellerTopRight = Bodies.rectangle(450, 250, 140, 15, propellerOptions);
 
@@ -172,23 +206,20 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
       label: label
     });
 
-    const ballRadius = 16; // Bigger balls for more collisions
+    const ballRadius = 16; 
     const dropY = -50; 
 
-    // Cluster balls near center to force interaction immediately
+    // Cluster balls near center
     const centerX = width / 2;
     
     const balls = players.map((player, index) => {
-        // Distribute closely around center (-30 to +30 range)
         const offset = (index - 1.5) * 20; 
         const startX = centerX + offset;
-        
-        // Add random jitter
         const jitter = (Math.random() - 0.5) * 10; 
         
         return Bodies.circle(
             startX + jitter, 
-            dropY + (Math.random() * 20), // Slight height diff
+            dropY + (Math.random() * 20), 
             ballRadius, 
             ballOptions(player.color, player.id)
         );
@@ -203,17 +234,24 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
       for (let i = 0; i < pairs.length; i++) {
         const { bodyA, bodyB } = pairs[i];
         
-        // Check if ball hit the floor sensor
         if (bodyA.label === 'FloorSensor' || bodyB.label === 'FloorSensor') {
           const ballBody = bodyA.label === 'FloorSensor' ? bodyB : bodyA;
           
           if (ballBody.label && ballBody.label !== 'FloorSensor') {
-             // Find player by ID
              const winningPlayer = players.find(p => p.id === ballBody.label);
              if (winningPlayer) {
                  setWinner(winningPlayer);
-                 Runner.stop(runner); // Stop the game
-                 return; // Only first winner counts
+                 Matter.Runner.stop(runner); 
+                 
+                 // Broadcast winner
+                 if (channelRef.current) {
+                     channelRef.current.send({
+                         type: 'broadcast',
+                         event: 'game_winner',
+                         payload: { winnerId: winningPlayer.id }
+                     });
+                 }
+                 return; 
              }
           }
         }
@@ -233,8 +271,9 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, onRestart }) => {
       World.clear(world, false);
       Engine.clear(engine);
     };
-  }, [players]); // Depend on players to restart with new players
+  }, [players]); 
 
+  // --- UI ---
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white relative">
       <h1 className="text-3xl font-bold mb-4">Death Pinball (4 Players)</h1>

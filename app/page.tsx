@@ -9,19 +9,16 @@ type GameState = 'lobby' | 'playing';
 export default function Home() {
   const [gameState, setGameState] = useState<GameState>('lobby');
   const [players, setPlayers] = useState<Player[]>([]);
-  const [gameKey, setGameKey] = useState(0); // Key to force remount of PinballBoard
+  const [gameKey, setGameKey] = useState(0); 
+  const [currentRoomId, setCurrentRoomId] = useState<string>('');
 
-  const handleGameStart = (joinedPlayers: Player[]) => {
+  const handleGameStart = (joinedPlayers: Player[], roomId: string) => {
     setPlayers(joinedPlayers);
+    setCurrentRoomId(roomId);
     setGameState('playing');
   };
 
   const handleRestart = () => {
-    // Option 1: Go back to lobby
-    // setGameState('lobby');
-    // setPlayers([]);
-
-    // Option 2: Restart immediately with same players
     setGameKey(prev => prev + 1);
   };
 
@@ -31,9 +28,10 @@ export default function Home() {
         <Lobby onGameStart={handleGameStart} />
       ) : (
         <PinballBoard 
-            key={gameKey} // Force remount on restart
+            key={gameKey} 
             players={players} 
-            onRestart={handleRestart} 
+            onRestart={handleRestart}
+            roomId={currentRoomId}
         />
       )}
     </main>
