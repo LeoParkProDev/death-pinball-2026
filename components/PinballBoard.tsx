@@ -29,10 +29,11 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
   const renderRef = useRef<Matter.Render | null>(null);
   const runnerRef = useRef<Matter.Runner | null>(null);
   
-  const [winner, setWinner] = useState<Player | null>(null);
+  const [loser, setLoser] = useState<Player | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const finishedPlayersRef = useRef<Set<string>>(new Set());
 
-  // --- Realtime Winner Sync ---
+  // --- Realtime Loser Sync ---
   useEffect(() => {
       if (!roomId) return;
 
@@ -41,12 +42,12 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
       });
 
       channel
-        .on('broadcast', { event: 'game_winner' }, ({ payload }) => {
-            // Received winner from Host
-            if (payload.winnerId) {
-                const winnerPlayer = players.find(p => p.id === payload.winnerId);
-                if (winnerPlayer) {
-                    setWinner(winnerPlayer);
+        .on('broadcast', { event: 'game_loser' }, ({ payload }) => {
+            // Received loser from Host
+            if (payload.loserId) {
+                const loserPlayer = players.find(p => p.id === payload.loserId);
+                if (loserPlayer) {
+                    setLoser(loserPlayer);
                     if (runnerRef.current) Matter.Runner.stop(runnerRef.current);
                 }
             }
@@ -61,13 +62,16 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
       return () => {
           supabase.removeChannel(channel);
       };
-  }, [roomId, players]);
+  }, [roomId, players, onRestart]);
 
 
   // --- Physics Engine ---
   useEffect(() => {
     if (!sceneRef.current || players.length === 0) return;
-    if (winner) return; 
+    if (loser) return; 
+
+    // Reset finished players on new game
+    finishedPlayersRef.current = new Set();
 
     // Initialize RNG with seed
     const rng = seedrandom(randomSeed);
@@ -79,6 +83,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     const World = Matter.World;
     const Bodies = Matter.Bodies;
     const Events = Matter.Events;
+    const Composite = Matter.Composite;
 
     // Deterministic simulation is hard in JS, but seed helps initial state
     const engine = Engine.create();
@@ -231,9 +236,25 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     
     World.add(world, balls);
 
+    // Draw names above balls
+    Events.on(render, 'afterRender', () => {
+        const ctx = render.context;
+        ctx.font = 'bold 14px Arial';
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'center';
+
+        balls.forEach((ball, index) => {
+            const player = players[index];
+            // Only draw name if ball is still in world (not removed)
+            if (player && Composite.get(world, ball.id, 'body')) {
+                ctx.fillText(player.name, ball.position.x, ball.position.y - 20);
+            }
+        });
+    });
+
     // 6. Collision Event
     Events.on(engine, 'collisionStart', (event) => {
-      // ONLY HOST determines winner to prevent sync issues
+      // ONLY HOST determines loser
       if (!isHost) return;
 
       const pairs = event.pairs;
@@ -245,20 +266,34 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
           const ballBody = bodyA.label === 'FloorSensor' ? bodyB : bodyA;
           
           if (ballBody.label && ballBody.label !== 'FloorSensor') {
-             const winningPlayer = players.find(p => p.id === ballBody.label);
-             if (winningPlayer) {
-                 setWinner(winningPlayer);
-                 Matter.Runner.stop(runner); 
+             const playerId = ballBody.label;
+             
+             // If already finished, ignore
+             if (finishedPlayersRef.current.has(playerId)) continue;
+
+             // Mark as finished
+             finishedPlayersRef.current.add(playerId);
+             
+             // Remove ball from world
+             Composite.remove(world, ballBody);
+
+             // Check if everyone finished
+             if (finishedPlayersRef.current.size === players.length) {
+                 const loserPlayer = players.find(p => p.id === playerId);
                  
-                 // Broadcast winner
-                 if (channelRef.current) {
-                     channelRef.current.send({
-                         type: 'broadcast',
-                         event: 'game_winner',
-                         payload: { winnerId: winningPlayer.id }
-                     });
+                 if (loserPlayer) {
+                     setLoser(loserPlayer);
+                     Matter.Runner.stop(runner); 
+                     
+                     // Broadcast loser
+                     if (channelRef.current) {
+                         channelRef.current.send({
+                             type: 'broadcast',
+                             event: 'game_loser',
+                             payload: { loserId: loserPlayer.id }
+                         });
+                     }
                  }
-                 return; 
              }
           }
         }
@@ -283,7 +318,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
   // --- UI ---
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white relative">
-      <h1 className="text-3xl font-bold mb-4">Death Pinball (4 Players)</h1>
+      <h1 className="text-3xl font-bold mb-4">Death Pinball (Last One Loses!)</h1>
       
       <div className="relative">
         <div 
@@ -292,18 +327,19 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
           style={{ width: 600, height: 800 }}
         />
         
-        {winner && (
+        {loser && (
            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-10 p-8 text-center animate-fade-in">
              <div 
-                className="w-24 h-24 rounded-full mb-6 border-4 border-white shadow-lg animate-bounce"
-                style={{ backgroundColor: winner.color }}
-             />
-             <h2 className="text-5xl font-black text-white mb-2">
-               {winner.name} Wins!
+                className="w-32 h-32 rounded-full mb-6 border-8 border-yellow-400 shadow-2xl animate-bounce flex items-center justify-center bg-black"
+             >
+                 <span className="text-6xl">🏆</span>
+             </div>
+             <h2 className="text-6xl font-black text-white mb-2 drop-shadow-lg">
+               WIN!
              </h2>
-             <p className="text-xl text-gray-300 mb-8">
-               Color: {winner.colorName}
-             </p>
+             <h3 className="text-4xl font-bold text-yellow-400 mb-8">
+               {loser.name}
+             </h3>
              
              {isHost ? (
                 <button 
@@ -317,12 +353,12 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                     }
                     onRestart();
                 }}
-                className="px-8 py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg"
+                className="px-8 py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg"
                 >
                 Play Again
                 </button>
              ) : (
-                 <p className="text-yellow-400 animate-pulse font-bold text-xl">Waiting for Host to restart...</p>
+                 <p className="text-yellow-200 animate-pulse font-bold text-xl">Waiting for Host to restart...</p>
              )}
            </div>
         )}
@@ -332,7 +368,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         {players.map(p => (
             <div key={p.id} className="flex items-center gap-2">
                 <div className="w-4 h-4 rounded-full" style={{ backgroundColor: p.color }} />
-                <span className={winner?.id === p.id ? 'font-bold text-yellow-400' : 'text-gray-400'}>
+                <span className={loser?.id === p.id ? 'font-bold text-red-500 underline' : 'text-gray-400'}>
                     {p.name}
                 </span>
             </div>
