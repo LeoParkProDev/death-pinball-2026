@@ -15,16 +15,16 @@ export type Player = {
 };
 
 interface LobbyProps {
-  onGameStart: (players: Player[], roomId: string, randomSeed: string, isHost: boolean) => void;
+  onGameStart: (players: Player[], roomId: string, randomSeed: string, isHost: boolean, myPlayerId: string) => void;
 }
 
-// ... (constants)
 const COLORS = [
   { code: '#ff4d4d', name: 'Red' },
   { code: '#4dff4d', name: 'Green' },
   { code: '#4d4dff', name: 'Blue' },
   { code: '#ffff4d', name: 'Yellow' },
 ];
+
 const BOT_NAMES = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot'];
 
 const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
@@ -92,9 +92,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
         }
       })
       .on('broadcast', { event: 'start_game' }, ({ payload }) => {
-          // Everyone starts game with same seed
-          // Note: Here isHostUser is false for guests
-          onGameStart(payload.players, id, payload.seed, isHostUser);
+          onGameStart(payload.players, id, payload.seed, isHostUser, myPlayerId);
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
@@ -115,7 +113,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
       return () => {
           if (channelRef.current) supabase.removeChannel(channelRef.current);
       };
-  }, []);
+  }, [myPlayerId]); // Add myPlayerId dependency to closure
 
   const generateRoomId = () => {
     const id = Math.floor(1000 + Math.random() * 9000).toString();
@@ -187,7 +185,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
               payload: { players, seed: randomSeed }
           });
       }
-      onGameStart(players, roomId, randomSeed, true); // I am Host
+      onGameStart(players, roomId, randomSeed, true, myPlayerId);
   };
 
   const allReady = players.length > 0 && players.every(p => p.isReady);
