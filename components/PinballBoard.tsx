@@ -299,11 +299,11 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
 
             // 2. Gravity Skill (Every 240 frames ≈ 4s)
             if (player.character === 'gravity' && frame % 240 === 0) {
-                // Directions: Up, Left, Right
+                // Directions: Up, Left, Right (Reduced force for ~30px shift)
                 const directions = [
-                    { x: 0, y: -25 }, // Up
-                    { x: -25, y: -5 }, // Left (slight up)
-                    { x: 25, y: -5 }   // Right (slight up)
+                    { x: 0, y: -12 }, // Up
+                    { x: -12, y: -3 }, // Left (slight up)
+                    { x: 12, y: -3 }   // Right (slight up)
                 ];
                 // Deterministic random direction
                 const dir = directions[Math.floor(rng() * directions.length)];
