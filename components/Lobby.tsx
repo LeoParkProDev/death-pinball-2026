@@ -73,10 +73,33 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     if (channelRef.current) supabase.removeChannel(channelRef.current);
 
     const channel = supabase.channel(`room:${roomId}`, {
-      config: { broadcast: { self: true } },
+      config: { 
+        broadcast: { self: true },
+        presence: { key: myPlayerId }
+      },
     });
 
     channel
+      .on('presence', { event: 'sync' }, () => {
+        if (!isHost) {
+            const state = channel.presenceState();
+            let hostFound = false;
+            for (const id in state) {
+                const presences = state[id] as any[];
+                if (presences.some(p => p.isHost === true)) {
+                    hostFound = true;
+                    break;
+                }
+            }
+            // Disconnect if host left and we are still supposedly joined
+            if (!hostFound && channel.state === 'joined') {
+                alert('Host has left the room. Disconnecting...');
+                setRoomId('');
+                setPlayers([]);
+                setView('home');
+            }
+        }
+      })
       .on('broadcast', { event: 'update_players' }, ({ payload }) => {
         if (!isHost) setPlayers(payload.players);
       })
@@ -105,8 +128,10 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
       .on('broadcast', { event: 'start_game' }, ({ payload }) => {
           onGameStart(payload.players, roomId, payload.seed, isHost, myPlayerId);
       })
-      .subscribe((status) => {
+      .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
+            await channel.track({ isHost });
+
             if (!isHost) {
                  // Construct player object from state/props since we can't trust stale 'players' state here
                  const me: Player = {

@@ -57,12 +57,32 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
       if (!roomId) return;
 
       const channel = supabase.channel(`room:${roomId}`, {
-        config: { broadcast: { self: true } }
+        config: { 
+            broadcast: { self: true },
+            presence: { key: myId }
+        }
       });
 
       let syncInterval: NodeJS.Timeout;
 
       channel
+        .on('presence', { event: 'sync' }, () => {
+            if (!isHost) {
+                const state = channel.presenceState();
+                let hostFound = false;
+                for (const id in state) {
+                    const presences = state[id] as any[];
+                    if (presences.some(p => p.isHost === true)) {
+                        hostFound = true;
+                        break;
+                    }
+                }
+                if (!hostFound && channel.state === 'joined') {
+                    alert('Host has left the game. Returning to main menu...');
+                    window.location.href = '/';
+                }
+            }
+        })
         .on('broadcast', { event: 'game_loser' }, ({ payload }) => {
             if (payload.loserId) {
                 const loserPlayer = players.find(p => p.id === payload.loserId);
@@ -105,26 +125,29 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                 });
             }
         })
-        .subscribe((status) => {
-            if (status === 'SUBSCRIBED' && isHost) {
-                syncInterval = setInterval(() => {
-                    if (!ballsRef.current || ballsRef.current.length === 0) return;
-                    
-                    const ballData = ballsRef.current.map(b => ({
-                        id: b.label,
-                        x: b.position.x, 
-                        y: b.position.y,
-                        vx: b.velocity.x,
-                        vy: b.velocity.y,
-                        av: b.angularVelocity
-                    }));
+        .subscribe(async (status) => {
+            if (status === 'SUBSCRIBED') {
+                await channel.track({ isHost });
+                if (isHost) {
+                    syncInterval = setInterval(() => {
+                        if (!ballsRef.current || ballsRef.current.length === 0) return;
+                        
+                        const ballData = ballsRef.current.map(b => ({
+                            id: b.label,
+                            x: b.position.x, 
+                            y: b.position.y,
+                            vx: b.velocity.x,
+                            vy: b.velocity.y,
+                            av: b.angularVelocity
+                        }));
 
-                    channel.send({
-                        type: 'broadcast',
-                        event: 'sync_state',
-                        payload: { balls: ballData }
-                    });
-                }, 50);
+                        channel.send({
+                            type: 'broadcast',
+                            event: 'sync_state',
+                            payload: { balls: ballData }
+                        });
+                    }, 50);
+                }
             }
         });
 
