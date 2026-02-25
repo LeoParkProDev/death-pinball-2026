@@ -140,13 +140,22 @@ const MapViewer = () => {
     const leftBelt = Bodies.rectangle(100, 850, 180, 20, beltOptions); 
     const rightBelt = Bodies.rectangle(500, 850, 180, 20, beltOptions); 
 
-    // Exit Obstacles (Expanded 1.3x)
-    const exitPegs = [
-        Bodies.circle(300, 1440, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Top
-        Bodies.circle(260, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Left
-        Bodies.circle(340, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Right
-        Bodies.circle(300, 1520, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Bottom
+    // Exit Obstacles
+    const exitPegs: Matter.Body[] = [
+        Bodies.circle(300, 1436, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(256, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(344, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(300, 1524, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
     ];
+
+    // Final row of pegs (tight gap) just above floor sensor
+    for (let x = 168; x <= 432; x += 44) {
+        exitPegs.push(Bodies.circle(x, 1560, 6, { 
+            isStatic: true, 
+            restitution: 0.8, 
+            render: { fillStyle: '#e74c3c' } 
+        }));
+    }
 
     World.add(world, [crossTop, crossMiddle, crossBottom, leftBelt, rightBelt, ...exitPegs]);
 

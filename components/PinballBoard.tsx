@@ -235,12 +235,22 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     const rightBelt = Bodies.rectangle(500, 850, 180, 20, beltOptions); 
 
     // Exit Obstacles
-    const exitPegs = [
+    const exitPegs: Matter.Body[] = [
         Bodies.circle(300, 1436, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
         Bodies.circle(256, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
         Bodies.circle(344, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
         Bodies.circle(300, 1524, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
     ];
+
+    // Final row of pegs (tight gap) just above floor sensor
+    // Ball diameter = 30, Peg diameter = 12. Gap = 32 -> Spacing = 44
+    for (let x = 168; x <= 432; x += 44) {
+        exitPegs.push(Bodies.circle(x, 1560, 6, { 
+            isStatic: true, 
+            restitution: 0.8, 
+            render: { fillStyle: '#e74c3c' } 
+        }));
+    }
 
     World.add(world, [crossTop, crossMiddle, crossBottom, leftBelt, rightBelt, ...exitPegs]);
 
