@@ -115,7 +115,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
                     color: '', // Host will assign
                     colorName: '', // Host will assign
                     isHost: false,
-                    isReady: false
+                    isReady: true // Automatically ready upon joining
                  };
                  
                  channel.send({
