@@ -38,6 +38,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
   const finishedPlayersRef = useRef<Set<string>>(new Set());
   const ballsRef = useRef<Matter.Body[]>([]);
   const frameCounterRef = useRef<number>(0);
+  const teleportEffectsRef = useRef<{ ballId: number; endFrame: number }[]>([]);
 
   // Camera Control Logic
   const isUserScrollingRef = useRef(false);
@@ -272,8 +273,8 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
             // If ball is already finished, it cannot use skills
             if (finishedPlayersRef.current.has(player.id)) return;
 
-            // 1. Teleport Skill (Every 300 frames ≈ 5s)
-            if (player.character === 'teleport' && frame % 300 === 0) {
+            // 1. Teleport Skill (Every 420 frames ≈ 7s)
+            if (player.character === 'teleport' && frame % 420 === 0) {
                 // Find other alive balls
                 const otherAliveBalls = balls.filter((b, i) => {
                     const p = players[i];
@@ -284,6 +285,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                     // Pick random target using deterministic RNG
                     const targetIndex = Math.floor(rng() * otherAliveBalls.length);
                     const targetBall = otherAliveBalls[targetIndex];
+                    
+                    // Add Teleport Effects (Duration: 30 frames ≈ 0.5s)
+                    teleportEffectsRef.current.push({ ballId: ball.id, endFrame: frame + 30 });
+                    teleportEffectsRef.current.push({ ballId: targetBall.id, endFrame: frame + 30 });
                     
                     // Swap Positions
                     const tempPos = { x: ball.position.x, y: ball.position.y };
@@ -346,6 +351,33 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         ctx.fillText("<< << <<", 500, 855); 
         ctx.font = 'bold 14px Arial';
 
+        // Draw Teleport Effects
+        const currentFrame = frameCounterRef.current;
+        teleportEffectsRef.current = teleportEffectsRef.current.filter(effect => currentFrame <= effect.endFrame);
+        
+        teleportEffectsRef.current.forEach(effect => {
+            const ball = balls.find(b => b.id === effect.ballId);
+            if (ball) {
+                // Lightning/Sparkle effect
+                ctx.beginPath();
+                ctx.arc(ball.position.x, ball.position.y, 25, 0, 2 * Math.PI);
+                ctx.lineWidth = 4;
+                // Flicker effect using frame count
+                ctx.strokeStyle = currentFrame % 4 < 2 ? '#f1c40f' : '#f39c12'; 
+                ctx.stroke();
+                
+                // Add some zigzag lines to simulate lightning
+                ctx.beginPath();
+                ctx.moveTo(ball.position.x - 15, ball.position.y - 15);
+                ctx.lineTo(ball.position.x, ball.position.y - 5);
+                ctx.lineTo(ball.position.x - 10, ball.position.y + 5);
+                ctx.lineTo(ball.position.x + 15, ball.position.y + 15);
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = '#fff';
+                ctx.stroke();
+            }
+        });
+
         let myBall = null;
         balls.forEach((ball, index) => {
             const player = players[index];
@@ -360,7 +392,9 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
 
         if (!isUserScrollingRef.current && myBall && sceneRef.current && sceneRef.current.parentElement) {
             const container = sceneRef.current.parentElement;
-            const targetScroll = (myBall as any).position.y - container.clientHeight / 2;
+            // The canvas width is 600 physically, but visually scaled to container width
+            const scale = container.clientWidth / 600; 
+            const targetScroll = ((myBall as any).position.y * scale) - container.clientHeight / 2;
             isAutoScrollingRef.current = true;
             container.scrollTop = targetScroll;
         }
@@ -425,15 +459,15 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
 
   // --- UI ---
   return (
-    <div className="flex flex-col items-center min-h-screen bg-gray-900 text-white relative">
+    <div className="flex flex-col items-center h-[100dvh] bg-gray-950 text-white relative pb-[env(safe-area-inset-bottom)] overflow-hidden">
       
       {/* Sticky Header: Players */}
-      <div className="sticky top-0 z-20 w-full bg-gray-900/90 backdrop-blur-md border-b border-gray-800 p-4 shadow-lg flex justify-center">
-        <div className="flex gap-4">
+      <div className="z-20 w-full bg-gray-900/90 backdrop-blur-md border-b border-gray-800 p-2 md:p-4 shadow-lg flex justify-center shrink-0">
+        <div className="flex flex-wrap justify-center gap-2 md:gap-4">
             {players.map(p => (
-                <div key={p.id} className="flex items-center gap-2 px-3 py-1 rounded-full bg-gray-800 border border-gray-700">
-                    <div className="w-4 h-4 rounded-full" style={{ backgroundColor: p.color }} />
-                    <span className={loser?.id === p.id ? 'font-bold text-yellow-400 underline' : 'text-gray-300 font-medium'}>
+                <div key={p.id} className="flex items-center gap-1 md:gap-2 px-2 md:px-3 py-1 rounded-full bg-gray-800 border border-gray-700">
+                    <div className="w-3 h-3 md:w-4 md:h-4 rounded-full" style={{ backgroundColor: p.color }} />
+                    <span className={`text-xs md:text-sm truncate max-w-[80px] md:max-w-none ${loser?.id === p.id ? 'font-bold text-yellow-400 underline' : 'text-gray-300 font-medium'}`}>
                         {getCharIcon(p.character)} {p.name}
                     </span>
                 </div>
@@ -441,19 +475,26 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         </div>
       </div>
 
+      {/* Game Board Container */}
       <div 
-        className="relative w-[600px] h-[80vh] mt-4 overflow-y-auto border-4 border-gray-700 rounded-lg shadow-2xl bg-gray-800 scrollbar-hide"
+        className="relative flex-1 w-full max-w-[600px] mt-2 md:mt-4 mb-2 md:mb-4 overflow-y-auto border-y-4 md:border-4 border-gray-700 md:rounded-lg shadow-2xl bg-gray-800 scrollbar-hide"
         onScroll={handleScroll} 
       >
-        <div ref={sceneRef} style={{ width: 600, height: 1600 }} />
+        <div ref={sceneRef} className="w-full [&>canvas]:w-full [&>canvas]:max-w-[600px] [&>canvas]:h-auto" />
         {loser && (
-           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-30 p-8 text-center animate-fade-in fixed top-0 left-0 w-full h-full">
-             <div className="w-32 h-32 rounded-full mb-6 border-8 border-yellow-400 shadow-2xl animate-bounce flex items-center justify-center bg-black">
-                 <span className="text-6xl">🏆</span>
+           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-30 p-4 text-center animate-fade-in fixed top-0 left-0 w-full h-full">
+             <div className="w-24 h-24 md:w-32 md:h-32 rounded-full mb-4 md:mb-6 border-4 md:border-8 border-yellow-400 shadow-2xl animate-bounce flex items-center justify-center bg-black">
+                 <span className="text-4xl md:text-6xl">🏆</span>
              </div>
-             <h2 className="text-6xl font-black text-white mb-2 drop-shadow-lg">WIN!</h2>
-             <h3 className="text-4xl font-bold text-yellow-400 mb-8">{getCharIcon(loser.character)} {loser.name}</h3>
-             {isHost ? (<button onClick={() => { if (channelRef.current) { channelRef.current.send({ type: 'broadcast', event: 'restart_game', payload: {} }); } onRestart(); }} className="px-8 py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg">Play Again</button>) : (<p className="text-yellow-200 animate-pulse font-bold text-xl">Waiting for Host to restart...</p>)}
+             <h2 className="text-4xl md:text-6xl font-black text-white mb-2 drop-shadow-lg">WIN!</h2>
+             <h3 className="text-2xl md:text-4xl font-bold text-yellow-400 mb-6 md:mb-8">{getCharIcon(loser.character)} {loser.name}</h3>
+             {isHost ? (
+                 <button onClick={() => { if (channelRef.current) { channelRef.current.send({ type: 'broadcast', event: 'restart_game', payload: {} }); } onRestart(); }} className="px-6 md:px-8 py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold text-lg md:text-xl rounded-full hover:scale-105 transition transform shadow-lg">
+                     Play Again
+                 </button>
+             ) : (
+                 <p className="text-yellow-200 animate-pulse font-bold text-sm md:text-xl">Waiting for Host to restart...</p>
+             )}
            </div>
         )}
       </div>
