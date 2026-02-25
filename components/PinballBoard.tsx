@@ -454,26 +454,26 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
              setFinishedPlayerIds(prev => new Set(prev).add(playerId));
              Composite.remove(world, ballBody);
 
-             // Last Man Standing Logic (Win condition)
+             // Last Man Standing Logic (Defeated condition)
              if (!isHost) continue; // Only Host decides the winner
 
              const threshold = players.length > 1 ? players.length - 1 : 1;
              if (finishedPlayersRef.current.size === threshold) {
-                 let winnerPlayer: Player | undefined;
+                 let defeatedPlayer: Player | undefined;
                  if (players.length > 1) {
-                     winnerPlayer = players.find(p => !finishedPlayersRef.current.has(p.id));
+                     defeatedPlayer = players.find(p => !finishedPlayersRef.current.has(p.id));
                  } else {
-                     winnerPlayer = players[0];
+                     defeatedPlayer = players[0];
                  }
                  
-                 if (winnerPlayer) {
-                     setLoser(winnerPlayer); // Display WIN!
+                 if (defeatedPlayer) {
+                     setLoser(defeatedPlayer); // Display Defeated!
                      Matter.Runner.stop(runner); 
                      if (channelRef.current) {
                          channelRef.current.send({
                              type: 'broadcast',
                              event: 'game_loser',
-                             payload: { loserId: winnerPlayer.id }
+                             payload: { loserId: defeatedPlayer.id }
                          });
                      }
                  }
@@ -540,9 +540,9 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         {loser && (
            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-30 p-4 text-center animate-fade-in fixed top-0 left-0 w-full h-full">
              <div className="w-24 h-24 md:w-32 md:h-32 rounded-full mb-4 md:mb-6 border-4 md:border-8 border-yellow-400 shadow-2xl animate-bounce flex items-center justify-center bg-black">
-                 <span className="text-4xl md:text-6xl">🏆</span>
+                 <span className="text-4xl md:text-6xl">☕️</span>
              </div>
-             <h2 className="text-4xl md:text-6xl font-black text-white mb-2 drop-shadow-lg">WIN!</h2>
+             <h2 className="text-4xl md:text-6xl font-black text-white mb-2 drop-shadow-lg">Defeated</h2>
              <h3 className="text-2xl md:text-4xl font-bold text-yellow-400 mb-6 md:mb-8">{getCharIcon(loser.character)} {loser.name}</h3>
              {isHost ? (
                  <button onClick={() => { if (channelRef.current) { channelRef.current.send({ type: 'broadcast', event: 'restart_game', payload: {} }); } onRestart(); }} className="px-6 md:px-8 py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold text-lg md:text-xl rounded-full hover:scale-105 transition transform shadow-lg">

@@ -44,8 +44,13 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
   const [isHost, setIsHost] = useState(false);
   const [url, setUrl] = useState('');
   const [myPlayerId, setMyPlayerId] = useState<string>('');
-  
+
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const playersRef = useRef<Player[]>([]);
+  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Keep playersRef in sync with latest state
+  useEffect(() => { playersRef.current = players; }, [players]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -59,6 +64,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     }
   }, []);
 
+  // Broadcast player updates (Host only)
   useEffect(() => {
     if (!isHost || !channelRef.current || players.length === 0) return;
     if (channelRef.current.state === 'closed') return;
@@ -70,19 +76,44 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     });
   }, [players, isHost]);
 
-  const setupChannel = (id: string, isHostUser: boolean, initialPlayers: Player[]) => {
+  // Main Channel Subscription Effect
+  useEffect(() => {
+    if (!roomId || !myPlayerId) return;
+
     if (channelRef.current) supabase.removeChannel(channelRef.current);
 
-    const channel = supabase.channel(`room:${id}`, {
-      config: { broadcast: { self: true } },
+    const channel = supabase.channel(`room:${roomId}`, {
+      config: { 
+        broadcast: { self: true },
+        presence: { key: myPlayerId }
+      },
     });
 
     channel
+      .on('presence', { event: 'sync' }, () => {
+        if (!isHost) {
+            const state = channel.presenceState();
+            let hostFound = false;
+            for (const id in state) {
+                const presences = state[id] as any[];
+                if (presences.some(p => p.isHost === true)) {
+                    hostFound = true;
+                    break;
+                }
+            }
+            if (!hostFound && channel.state === 'joined') {
+                alert('Host has left the room. Disconnecting...');
+                setRoomId('');
+                setPlayers([]);
+                setView('home');
+            }
+        }
+      })
       .on('broadcast', { event: 'update_players' }, ({ payload }) => {
-        if (!isHostUser) setPlayers(payload.players);
+        if (!isHost) setPlayers(payload.players);
       })
       .on('broadcast', { event: 'join_request' }, ({ payload }) => {
-        if (isHostUser) {
+        if (isHost) {
           setPlayers((prev) => {
             if (prev.length >= 4) return prev;
             if (prev.some(p => p.id === payload.player.id)) return prev;
@@ -93,33 +124,75 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
             };
             return [...prev, newPlayer];
           });
+          // Force re-broadcast player list after a short delay
+          // This ensures the joining guest receives the update even if the
+          // initial update_players broadcast was missed due to timing
+          setTimeout(() => {
+            if (channelRef.current && channelRef.current.state !== 'closed') {
+              channelRef.current.send({
+                type: 'broadcast',
+                event: 'update_players',
+                payload: { players: playersRef.current }
+              });
+            }
+          }, 500);
         }
       })
       .on('broadcast', { event: 'ready_change' }, ({ payload }) => {
-        if (isHostUser) {
+        if (isHost) {
            setPlayers(prev => prev.map(p => 
                p.id === payload.id ? { ...p, isReady: payload.isReady } : p
            ));
         }
       })
       .on('broadcast', { event: 'character_change' }, ({ payload }) => {
-        if (isHostUser) {
+        if (isHost) {
            setPlayers(prev => prev.map(p => 
                p.id === payload.id ? { ...p, character: payload.character } : p
            ));
         }
       })
       .on('broadcast', { event: 'start_game' }, ({ payload }) => {
-          onGameStart(payload.players, id, payload.seed, isHostUser, myPlayerId);
+          onGameStart(payload.players, roomId, payload.seed, isHost, myPlayerId);
       })
-      .subscribe((status) => {
+      .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-            if (!isHostUser && initialPlayers.length > 0) {
+            await channel.track({ isHost });
+
+            if (!isHost) {
+                 const me: Player = {
+                    id: myPlayerId,
+                    name: nickname || `Guest-${Math.floor(Math.random()*100)}`,
+                    color: '',
+                    colorName: '',
+                    isHost: false,
+                    isReady: true,
+                    character: 'normal'
+                 };
+
                  channel.send({
                     type: 'broadcast',
                     event: 'join_request',
-                    payload: { player: initialPlayers[0] }
+                    payload: { player: me }
                  });
+
+                 // Retry: re-send join_request every 2s until added to player list
+                 if (retryTimerRef.current) clearInterval(retryTimerRef.current);
+                 retryTimerRef.current = setInterval(() => {
+                    const inList = playersRef.current.some(p => p.id === myPlayerId);
+                    if (inList) {
+                        if (retryTimerRef.current) {
+                            clearInterval(retryTimerRef.current);
+                            retryTimerRef.current = null;
+                        }
+                        return;
+                    }
+                    channel.send({
+                        type: 'broadcast',
+                        event: 'join_request',
+                        payload: { player: me }
+                    });
+                 }, 2000);
             } else {
                 if (players.length > 0) {
                     channel.send({
@@ -133,16 +206,18 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
       });
 
     channelRef.current = channel;
-  };
 
-  useEffect(() => {
-      return () => {
-          if (channelRef.current) {
-              supabase.removeChannel(channelRef.current);
-              channelRef.current = null;
-          }
-      };
-  }, [myPlayerId]); 
+    return () => {
+        if (retryTimerRef.current) {
+            clearInterval(retryTimerRef.current);
+            retryTimerRef.current = null;
+        }
+        if (channelRef.current) {
+            supabase.removeChannel(channelRef.current);
+            channelRef.current = null;
+        }
+    };
+  }, [roomId, myPlayerId, isHost]);
 
   const generateRoomId = () => {
     const id = Math.floor(1000 + Math.random() * 9000).toString();
@@ -163,7 +238,6 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
         character: 'normal'
     };
     setPlayers([me]);
-    setupChannel(id, true, [me]);
     setView('lobby');
   };
 
@@ -175,18 +249,7 @@ const Lobby: React.FC<LobbyProps> = ({ onGameStart }) => {
     setMyPlayerId(newId);
     setNickname(prev => prev || `Guest-${Math.floor(Math.random()*100)}`);
     
-    const me: Player = {
-        id: newId,
-        name: nickname || `Guest-${Math.floor(Math.random()*100)}`,
-        color: '', 
-        colorName: '', 
-        isHost: false,
-        isReady: true,
-        character: 'normal'
-    };
-
     setPlayers([]); 
-    setupChannel(roomId, false, [me]);
     setView('lobby');
   };
 
