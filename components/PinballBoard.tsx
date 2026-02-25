@@ -40,6 +40,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
   const ballsRef = useRef<Matter.Body[]>([]);
   const frameCounterRef = useRef<number>(0);
   const teleportEffectsRef = useRef<{ ballId: number; endFrame: number }[]>([]);
+  const gravityEffectRef = useRef<{ dir: { x: number; y: number }; endFrame: number } | null>(null);
 
   // Camera Control Logic
   const isUserScrollingRef = useRef(false);
@@ -304,23 +305,25 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
             }
         }
 
-        // 2. Gravity Skill (Every 240 frames ≈ 4s, trigger ONCE per interval if any gravity user is alive)
-        if (frame % 240 === 0 && gravityUsers.length > 0) {
-            const directions = [
-                { x: 0, y: -12 }, // Up
-                { x: -12, y: -3 }, // Left (slight up)
-                { x: 12, y: -3 }   // Right (slight up)
-            ];
-            const dir = directions[Math.floor(rng() * directions.length)];
-            
-            alivePlayers.forEach(ap => {
-                Body.setVelocity(ap.ball, {
-                    x: ap.ball.velocity.x + dir.x,
-                    y: ap.ball.velocity.y + dir.y
-                });
-            });
-        }
-
+                    // 2. Gravity Skill (Every 240 frames ≈ 4s, trigger ONCE per interval if any gravity user is alive)
+                    if (frame % 240 === 0 && gravityUsers.length > 0) {
+                        const directions = [
+                            { x: 0, y: -12 }, // Up
+                            { x: -12, y: -3 }, // Left (slight up)
+                            { x: 12, y: -3 }   // Right (slight up)
+                        ];
+                        const dir = directions[Math.floor(rng() * directions.length)];
+                        
+                        // Add Gravity Effect (Duration: 30 frames ≈ 0.5s)
+                        gravityEffectRef.current = { dir, endFrame: frame + 30 };
+                        
+                        alivePlayers.forEach(ap => {
+                            Body.setVelocity(ap.ball, {
+                                x: ap.ball.velocity.x + dir.x,
+                                y: ap.ball.velocity.y + dir.y
+                            });
+                        });
+                    }
         // --- Anti-Stuck & Belts ---
         balls.forEach((ball) => {
             // Anti-Stuck
@@ -376,6 +379,31 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                 ctx.stroke();
             }
         });
+
+        // Draw Gravity Effect
+        if (gravityEffectRef.current && currentFrame <= gravityEffectRef.current.endFrame) {
+            ctx.save();
+            ctx.globalAlpha = 0.2;
+            ctx.font = '120px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            // Determine arrow based on direction
+            let arrow = '⬆️';
+            if (gravityEffectRef.current.dir.x < 0) arrow = '↖️';
+            if (gravityEffectRef.current.dir.x > 0) arrow = '↗️';
+
+            let viewportCenterY = 800; // fallback
+            if (sceneRef.current && sceneRef.current.parentElement) {
+                const container = sceneRef.current.parentElement;
+                // De-scale the scroll position to canvas coordinates
+                const scale = container.clientWidth / 600; 
+                viewportCenterY = (container.scrollTop + container.clientHeight / 2) / scale;
+            }
+
+            ctx.fillText(`🧲 ${arrow}`, 300, viewportCenterY);
+            ctx.restore();
+        }
 
         let myBall = null;
         balls.forEach((ball, index) => {
