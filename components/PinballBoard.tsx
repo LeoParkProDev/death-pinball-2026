@@ -278,39 +278,38 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         const teleportUsers = alivePlayers.filter(ap => ap.player.character === 'teleport');
         const gravityUsers = alivePlayers.filter(ap => ap.player.character === 'gravity');
 
-        // 1. Teleport Skill (Every 420 frames ≈ 7s, trigger ONCE per interval if any teleport user is alive)
-        if (frame % 420 === 0 && teleportUsers.length > 0) {
-            // Pick exactly one teleport user to cast the skill deterministically
-            const casterIndex = Math.floor(rng() * teleportUsers.length);
-            const caster = teleportUsers[casterIndex];
-            const ball = caster.ball;
-
-            // Find other alive balls to swap with
-            const otherAliveBalls = alivePlayers.filter(ap => ap.player.id !== caster.player.id).map(ap => ap.ball);
-            
-            if (otherAliveBalls.length > 0) {
-                const targetIndex = Math.floor(rng() * otherAliveBalls.length);
-                const targetBall = otherAliveBalls[targetIndex];
-                
-                // Add Teleport Effects (Duration: 30 frames ≈ 0.5s)
-                teleportEffectsRef.current.push({ ballId: ball.id, endFrame: frame + 30 });
-                teleportEffectsRef.current.push({ ballId: targetBall.id, endFrame: frame + 30 });
-                
-                // Swap Positions
-                const tempPos = { x: ball.position.x, y: ball.position.y };
-                const tempVel = { x: ball.velocity.x, y: ball.velocity.y };
-                
-                Body.setPosition(ball, { x: targetBall.position.x, y: targetBall.position.y });
-                Body.setVelocity(ball, { x: targetBall.velocity.x, y: targetBall.velocity.y });
-                
-                Body.setPosition(targetBall, tempPos);
-                Body.setVelocity(targetBall, tempVel);
-            }
-        }
-
-                    // 2. Gravity Skill (Every 240 frames ≈ 4s, trigger ONCE per interval if any gravity user is alive)
-                    if (frame % 240 === 0 && gravityUsers.length > 0) {
-                        const directions = [
+                // 1. Teleport Skill (Starts at 12s, then every 10s, trigger ONCE per interval if any teleport user is alive)
+                if (frame >= 720 && (frame - 720) % 600 === 0 && teleportUsers.length > 0) {
+                    // Pick exactly one teleport user to cast the skill deterministically
+                    const casterIndex = Math.floor(rng() * teleportUsers.length);
+                    const caster = teleportUsers[casterIndex];
+                    const ball = caster.ball;
+        
+                    // Find other alive balls to swap with
+                    const otherAliveBalls = alivePlayers.filter(ap => ap.player.id !== caster.player.id).map(ap => ap.ball);
+                    
+                    if (otherAliveBalls.length > 0) {
+                        const targetIndex = Math.floor(rng() * otherAliveBalls.length);
+                        const targetBall = otherAliveBalls[targetIndex];
+                        
+                        // Add Teleport Effects (Duration: 30 frames ≈ 0.5s)
+                        teleportEffectsRef.current.push({ ballId: ball.id, endFrame: frame + 30 });
+                        teleportEffectsRef.current.push({ ballId: targetBall.id, endFrame: frame + 30 });
+                        
+                        // Swap Positions
+                        const tempPos = { x: ball.position.x, y: ball.position.y };
+                        const tempVel = { x: ball.velocity.x, y: ball.velocity.y };
+                        
+                        Body.setPosition(ball, { x: targetBall.position.x, y: targetBall.position.y });
+                        Body.setVelocity(ball, { x: targetBall.velocity.x, y: targetBall.velocity.y });
+                        
+                        Body.setPosition(targetBall, tempPos);
+                        Body.setVelocity(targetBall, tempVel);
+                    }
+                }
+        
+                // 2. Gravity Skill (Starts at 7s, then every 10s, trigger ONCE per interval if any gravity user is alive)
+                if (frame >= 420 && (frame - 420) % 600 === 0 && gravityUsers.length > 0) {                        const directions = [
                             { x: 0, y: -12 }, // Up
                             { x: -12, y: -3 }, // Left (slight up)
                             { x: 12, y: -3 }   // Right (slight up)
