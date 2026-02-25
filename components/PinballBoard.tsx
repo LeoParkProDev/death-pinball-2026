@@ -6,6 +6,8 @@ import { supabase } from '@/lib/supabaseClient';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import seedrandom from 'seedrandom';
 
+export type CharacterType = 'normal' | 'teleport' | 'gravity';
+
 export type Player = {
   id: string;
   name: string;
@@ -13,6 +15,7 @@ export type Player = {
   colorName: string;
   isHost: boolean;
   isReady: boolean;
+  character: CharacterType;
 };
 
 interface PinballBoardProps {
@@ -34,6 +37,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
   const channelRef = useRef<RealtimeChannel | null>(null);
   const finishedPlayersRef = useRef<Set<string>>(new Set());
   const ballsRef = useRef<Matter.Body[]>([]);
+  const frameCounterRef = useRef<number>(0);
 
   // Camera Control Logic
   const isUserScrollingRef = useRef(false);
@@ -52,37 +56,23 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
       }, 1000);
   };
 
+  const getCharIcon = (char: CharacterType) => {
+      if (char === 'teleport') return '⚡️';
+      if (char === 'gravity') return '🧲';
+      return '';
+  };
+
   // --- Realtime Sync ---
   useEffect(() => {
       if (!roomId) return;
 
       const channel = supabase.channel(`room:${roomId}`, {
-        config: { 
-            broadcast: { self: true },
-            presence: { key: myId }
-        }
+        config: { broadcast: { self: true } }
       });
 
       let syncInterval: NodeJS.Timeout;
 
       channel
-        .on('presence', { event: 'sync' }, () => {
-            if (!isHost) {
-                const state = channel.presenceState();
-                let hostFound = false;
-                for (const id in state) {
-                    const presences = state[id] as any[];
-                    if (presences.some(p => p.isHost === true)) {
-                        hostFound = true;
-                        break;
-                    }
-                }
-                if (!hostFound && channel.state === 'joined') {
-                    alert('Host has left the game. Returning to main menu...');
-                    window.location.href = '/';
-                }
-            }
-        })
         .on('broadcast', { event: 'game_loser' }, ({ payload }) => {
             if (payload.loserId) {
                 const loserPlayer = players.find(p => p.id === payload.loserId);
@@ -102,52 +92,33 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                 payload.balls.forEach((syncBall: any) => {
                     const localBall = ballsRef.current.find(b => b.label === syncBall.id);
                     if (localBall) {
-                        const dx = localBall.position.x - syncBall.x;
-                        const dy = localBall.position.y - syncBall.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy);
-
-                        // Threshold for smooth sync: Only snap if drift is significant (> 20px)
-                        if (distance > 20) {
-                            Matter.Body.setPosition(localBall, { x: syncBall.x, y: syncBall.y });
-                            Matter.Body.setVelocity(localBall, { x: syncBall.vx, y: syncBall.vy });
-                            Matter.Body.setAngularVelocity(localBall, syncBall.av);
-                        } else if (distance > 5) {
-                            // Soft correction for minor drift (5px - 20px): Nudge velocity towards target
-                            // This is a simple form of linear interpolation via velocity adjustment
-                            const correctionX = (syncBall.x - localBall.position.x) * 0.1;
-                            const correctionY = (syncBall.y - localBall.position.y) * 0.1;
-                            Matter.Body.setVelocity(localBall, { 
-                                x: localBall.velocity.x + correctionX, 
-                                y: localBall.velocity.y + correctionY 
-                            });
-                        }
+                        Matter.Body.setPosition(localBall, { x: syncBall.x, y: syncBall.y });
+                        Matter.Body.setVelocity(localBall, { x: syncBall.vx, y: syncBall.vy });
+                        Matter.Body.setAngularVelocity(localBall, syncBall.av);
                     }
                 });
             }
         })
-        .subscribe(async (status) => {
-            if (status === 'SUBSCRIBED') {
-                await channel.track({ isHost });
-                if (isHost) {
-                    syncInterval = setInterval(() => {
-                        if (!ballsRef.current || ballsRef.current.length === 0) return;
-                        
-                        const ballData = ballsRef.current.map(b => ({
-                            id: b.label,
-                            x: b.position.x, 
-                            y: b.position.y,
-                            vx: b.velocity.x,
-                            vy: b.velocity.y,
-                            av: b.angularVelocity
-                        }));
+        .subscribe((status) => {
+            if (status === 'SUBSCRIBED' && isHost) {
+                syncInterval = setInterval(() => {
+                    if (!ballsRef.current || ballsRef.current.length === 0) return;
+                    
+                    const ballData = ballsRef.current.map(b => ({
+                        id: b.label,
+                        x: b.position.x, 
+                        y: b.position.y,
+                        vx: b.velocity.x,
+                        vy: b.velocity.y,
+                        av: b.angularVelocity
+                    }));
 
-                        channel.send({
-                            type: 'broadcast',
-                            event: 'sync_state',
-                            payload: { balls: ballData }
-                        });
-                    }, 50);
-                }
+                    channel.send({
+                        type: 'broadcast',
+                        event: 'sync_state',
+                        payload: { balls: ballData }
+                    });
+                }, 1000);
             }
         });
 
@@ -166,6 +137,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     if (loser) return; 
 
     finishedPlayersRef.current = new Set();
+    frameCounterRef.current = 0;
     const rng = seedrandom(randomSeed);
 
     const Engine = Matter.Engine;
@@ -177,7 +149,6 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     const Composite = Matter.Composite;
     const Body = Matter.Body;
     const Collision = Matter.Collision; 
-    const Vector = Matter.Vector;
 
     const engine = Engine.create();
     const world = engine.world;
@@ -199,15 +170,6 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
       },
     });
     renderRef.current = render;
-    
-    // Setup sync listener again to use local variables/references if needed, 
-    // but the main sync logic is in the other useEffect. 
-    // Actually, we need to move the sync handler logic HERE or expose 'balls' to the other effect properly.
-    // The current structure has 'ballsRef' updated in the initialization, so the other effect works fine.
-    // We just need to update the sync handler in the FIRST useEffect to implement the threshold.
-    
-    // ... (rest of physics setup is fine) ...
-
 
     // --- 2. Walls ---
     const wallOptions = { isStatic: true, render: { fillStyle: '#555' } };
@@ -225,8 +187,6 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     World.add(world, floorSensor);
 
     // --- 4. Map Design ---
-    
-    // 4.1 Pegs
     const pegs: Matter.Body[] = [];
     const rows = 6; 
     const cols = 7;
@@ -248,16 +208,12 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     createPegBlock(950); 
     World.add(world, pegs);
 
-    // 4.2 Funnel
-    const funnelLeft = Bodies.rectangle(100, 1400, 234, 20, { 
-        isStatic: true, angle: Math.PI / 6, render: { fillStyle: '#6F4E37' }, friction: 0.05 
-    });
-    const funnelRight = Bodies.rectangle(500, 1400, 234, 20, { 
-        isStatic: true, angle: -Math.PI / 6, render: { fillStyle: '#6F4E37' }, friction: 0.05 
-    });
+    // Funnel
+    const funnelLeft = Bodies.rectangle(100, 1400, 234, 20, { isStatic: true, angle: Math.PI / 6, render: { fillStyle: '#6F4E37' }, friction: 0.05 });
+    const funnelRight = Bodies.rectangle(500, 1400, 234, 20, { isStatic: true, angle: -Math.PI / 6, render: { fillStyle: '#6F4E37' }, friction: 0.05 });
     World.add(world, [funnelLeft, funnelRight]);
 
-    // 4.3 Cross Propellers
+    // Cross Propellers
     const createCross = (x: number, y: number) => {
         const partA = Bodies.rectangle(x, y, 200, 20, { render: { fillStyle: '#f39c12' } });
         const partB = Bodies.rectangle(x, y, 20, 200, { render: { fillStyle: '#f39c12' } });
@@ -267,25 +223,20 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     const crossMiddle = createCross(300, 800);
     const crossBottom = createCross(300, 1200);
     
-    // 4.4 Conveyor Belts
-    const beltOptions = { 
-        isStatic: true, 
-        render: { fillStyle: '#3498db' },
-        friction: 0.8 
-    };
+    // Conveyor Belts
+    const beltOptions = { isStatic: true, render: { fillStyle: '#3498db' }, friction: 0.8 };
     const leftBelt = Bodies.rectangle(100, 850, 180, 20, beltOptions); 
     const rightBelt = Bodies.rectangle(500, 850, 180, 20, beltOptions); 
 
-    // 4.5 Exit Obstacles (Expanded 1.1x more)
+    // Exit Obstacles
     const exitPegs = [
-        Bodies.circle(300, 1436, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Top
-        Bodies.circle(256, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Left
-        Bodies.circle(344, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Right
-        Bodies.circle(300, 1524, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), // Bottom
+        Bodies.circle(300, 1436, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(256, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(344, 1480, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
+        Bodies.circle(300, 1524, 6, { isStatic: true, restitution: 0.8, render: { fillStyle: '#aaa' } }), 
     ];
 
     World.add(world, [crossTop, crossMiddle, crossBottom, leftBelt, rightBelt, ...exitPegs]);
-
 
     // --- 5. Balls ---
     const ballOptions = (color: string, label: string) => ({
@@ -303,22 +254,79 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     World.add(world, balls);
     ballsRef.current = balls;
 
-    // --- 6. Anti-Stuck & Rotation & Belts ---
+    // --- 6. Physics Loop (Skills, Anti-Stuck, Belts) ---
     Events.on(engine, 'beforeUpdate', () => {
+        frameCounterRef.current++;
+        const frame = frameCounterRef.current;
+
         // Rotate Propellers
         Matter.Body.rotate(crossTop, 0.01);
         Matter.Body.rotate(crossMiddle, -0.01); 
         Matter.Body.rotate(crossBottom, 0.01); 
 
-        balls.forEach((ball) => {
-            // Anti-Stuck
+        // --- SKILL LOGIC ---
+        balls.forEach((ball, index) => {
+            const player = players[index];
+            if (!player) return;
+            
+            // If ball is already finished, it cannot use skills
+            if (finishedPlayersRef.current.has(player.id)) return;
+
+            // 1. Teleport Skill (Every 300 frames ≈ 5s)
+            if (player.character === 'teleport' && frame % 300 === 0) {
+                // Find other alive balls
+                const otherAliveBalls = balls.filter((b, i) => {
+                    const p = players[i];
+                    return p && p.id !== player.id && !finishedPlayersRef.current.has(p.id);
+                });
+                
+                if (otherAliveBalls.length > 0) {
+                    // Pick random target using deterministic RNG
+                    const targetIndex = Math.floor(rng() * otherAliveBalls.length);
+                    const targetBall = otherAliveBalls[targetIndex];
+                    
+                    // Swap Positions
+                    const tempPos = { x: ball.position.x, y: ball.position.y };
+                    const tempVel = { x: ball.velocity.x, y: ball.velocity.y };
+                    
+                    Body.setPosition(ball, { x: targetBall.position.x, y: targetBall.position.y });
+                    Body.setVelocity(ball, { x: targetBall.velocity.x, y: targetBall.velocity.y });
+                    
+                    Body.setPosition(targetBall, tempPos);
+                    Body.setVelocity(targetBall, tempVel);
+                }
+            }
+
+            // 2. Gravity Skill (Every 240 frames ≈ 4s)
+            if (player.character === 'gravity' && frame % 240 === 0) {
+                // Directions: Up, Left, Right
+                const directions = [
+                    { x: 0, y: -25 }, // Up
+                    { x: -25, y: -5 }, // Left (slight up)
+                    { x: 25, y: -5 }   // Right (slight up)
+                ];
+                // Deterministic random direction
+                const dir = directions[Math.floor(rng() * directions.length)];
+                
+                // Apply shift to ALL alive balls (including self, makes it more chaotic)
+                balls.forEach((b, i) => {
+                    const p = players[i];
+                    if (p && !finishedPlayersRef.current.has(p.id)) {
+                        Body.setVelocity(b, {
+                            x: b.velocity.x + dir.x,
+                            y: b.velocity.y + dir.y
+                        });
+                    }
+                });
+            }
+
+            // --- Anti-Stuck & Belts ---
             if (Math.abs(ball.velocity.x) < 0.1 && Math.abs(ball.velocity.y) < 0.1) {
                 const randomForceX = (rng() - 0.5) * 0.005;
                 const forceY = -0.005; 
                 Body.applyForce(ball, ball.position, { x: randomForceX, y: forceY });
             }
 
-            // Conveyor Belt Logic
             if (Collision.collides(ball, leftBelt)) {
                 Body.setVelocity(ball, { x: 3, y: ball.velocity.y }); 
             }
@@ -328,15 +336,12 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         });
     });
 
-    // Camera & Names & Arrows
+    // --- Camera & Rendering ---
     Events.on(render, 'afterRender', () => {
         const ctx = render.context;
-        ctx.font = 'bold 14px Arial';
+        ctx.font = 'bold 24px Arial';
         ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
-
-        // Draw Arrows
-        ctx.font = 'bold 24px Arial';
         ctx.fillText(">> >> >>", 100, 855); 
         ctx.fillText("<< << <<", 500, 855); 
         ctx.font = 'bold 14px Arial';
@@ -345,7 +350,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
         balls.forEach((ball, index) => {
             const player = players[index];
             if (player && Composite.get(world, ball.id, 'body')) {
-                ctx.fillText(player.name, ball.position.x, ball.position.y - 25);
+                // Draw Icon + Name
+                const icon = getCharIcon(player.character);
+                ctx.fillText(`${icon} ${player.name}`, ball.position.x, ball.position.y - 25);
+                
                 if (player.id === myId) myBall = ball;
             }
         });
@@ -360,10 +368,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
 
     // 7. Collision Event
     Events.on(engine, 'collisionStart', (event) => {
-      if (!isHost) return;
       const pairs = event.pairs;
       for (let i = 0; i < pairs.length; i++) {
         const { bodyA, bodyB } = pairs[i];
+        
         if (bodyA.label === 'FloorSensor' || bodyB.label === 'FloorSensor') {
           const ballBody = bodyA.label === 'FloorSensor' ? bodyB : bodyA;
           if (ballBody.label && ballBody.label !== 'FloorSensor') {
@@ -372,9 +380,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
              finishedPlayersRef.current.add(playerId);
              Composite.remove(world, ballBody);
 
-             // Last Man Standing Logic
-             const threshold = players.length > 1 ? players.length - 1 : 1;
+             // Last Man Standing Logic (Win condition)
+             if (!isHost) continue; // Only Host decides the winner
 
+             const threshold = players.length > 1 ? players.length - 1 : 1;
              if (finishedPlayersRef.current.size === threshold) {
                  let winnerPlayer: Player | undefined;
                  if (players.length > 1) {
@@ -384,7 +393,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                  }
                  
                  if (winnerPlayer) {
-                     setLoser(winnerPlayer);
+                     setLoser(winnerPlayer); // Display WIN!
                      Matter.Runner.stop(runner); 
                      if (channelRef.current) {
                          channelRef.current.send({
@@ -425,7 +434,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                 <div key={p.id} className="flex items-center gap-2 px-3 py-1 rounded-full bg-gray-800 border border-gray-700">
                     <div className="w-4 h-4 rounded-full" style={{ backgroundColor: p.color }} />
                     <span className={loser?.id === p.id ? 'font-bold text-yellow-400 underline' : 'text-gray-300 font-medium'}>
-                        {p.name}
+                        {getCharIcon(p.character)} {p.name}
                     </span>
                 </div>
             ))}
@@ -443,7 +452,7 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
                  <span className="text-6xl">🏆</span>
              </div>
              <h2 className="text-6xl font-black text-white mb-2 drop-shadow-lg">WIN!</h2>
-             <h3 className="text-4xl font-bold text-yellow-400 mb-8">{loser.name}</h3>
+             <h3 className="text-4xl font-bold text-yellow-400 mb-8">{getCharIcon(loser.character)} {loser.name}</h3>
              {isHost ? (<button onClick={() => { if (channelRef.current) { channelRef.current.send({ type: 'broadcast', event: 'restart_game', payload: {} }); } onRestart(); }} className="px-8 py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold text-xl rounded-full hover:scale-105 transition transform shadow-lg">Play Again</button>) : (<p className="text-yellow-200 animate-pulse font-bold text-xl">Waiting for Host to restart...</p>)}
            </div>
         )}
