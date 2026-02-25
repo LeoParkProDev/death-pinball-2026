@@ -156,7 +156,10 @@ const PinballBoard: React.FC<PinballBoardProps> = ({ players, roomId, randomSeed
     const engine = Engine.create();
     const world = engine.world;
     
-    engine.gravity.y = 0.5;
+    // Reduce overall physics speed to 90%
+    engine.gravity.y = 0.45; 
+    engine.timing.timeScale = 0.9;
+
     engineRef.current = engine;
 
     const width = 600;
